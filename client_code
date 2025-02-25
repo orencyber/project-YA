@@ -1,0 +1,89 @@
+import pygame
+import socket
+
+# Constants for screen size and colors
+WIDTH, HEIGHT = 1280, 720
+WHITE = (255, 255, 255)
+PLAYER_COLOR = (0, 0, 255)  # Color for the player
+
+class GameClient:
+    def __init__(self, host='localhost', port=12345):
+        self.host = host
+        self.port = port
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_socket.connect((self.host, self.port))
+
+        self.player_pos = (300, 200)  # Initial position
+        self.player_id = "Player1"  # Unique player ID for the client
+
+        self.players = {}  # Dictionary to store other players
+
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Multiplayer Stick Fight")
+        self.clock = pygame.time.Clock()
+
+    def receive_game_state(self):
+        data = self.client_socket.recv(1024)
+        if data:
+            state_data = data.decode('utf-8').split(',')
+            self.players.clear()  # Clear previous state
+            for i in range(0, len(state_data), 3):
+                player_id = state_data[i]
+                x = int(state_data[i+1])
+                y = int(state_data[i+2])
+                self.players[player_id] = (x, y)
+
+    def send_player_data(self):
+        # Send player position data to the server
+        data = f"{self.player_id},{self.player_pos[0]},{self.player_pos[1]}"
+        self.client_socket.sendall(data.encode('utf-8'))
+
+    def handle_input(self):
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_a]:
+            self.player_pos = (self.player_pos[0] - 5, self.player_pos[1])
+        if keys[pygame.K_d]:
+            self.player_pos = (self.player_pos[0] + 5, self.player_pos[1])
+        if keys[pygame.K_w]:
+            self.player_pos = (self.player_pos[0], self.player_pos[1] - 5)
+        if keys[pygame.K_s]:
+            self.player_pos = (self.player_pos[0], self.player_pos[1] + 5)
+
+    def draw(self):
+        self.screen.fill(WHITE)
+
+        # Draw other players
+        for player_id, pos in self.players.items():
+            pygame.draw.rect(self.screen, PLAYER_COLOR, (pos[0], pos[1], 40, 60))
+
+        # Draw self
+        pygame.draw.rect(self.screen, (255, 0, 0), (self.player_pos[0], self.player_pos[1], 40, 60))
+
+        pygame.display.flip()
+
+    def start(self):
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+
+            # Handle player input and send data to server
+            self.handle_input()
+            self.send_player_data()
+
+            # Receive game state updates from the server
+            self.receive_game_state()
+
+            # Draw the game state
+            self.draw()
+
+            self.clock.tick(60)
+
+        self.client_socket.close()
+        pygame.quit()
+
+# Running the client
+if __name__ == "__main__":
+    client = GameClient()
+    client.start()
