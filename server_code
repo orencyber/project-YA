@@ -1,0 +1,107 @@
+import socket
+import pygame
+import threading
+import time
+import cv2
+import pygame.locals
+from opening_screen import draw_menu  # Importing your existing functions
+from main_game import main_game
+from run_mp4 import main as run_video
+
+# Server class to handle connections and manage the game
+class GameServer:
+    def __init__(self, host='localhost', port=12345):
+        self.host = host
+        self.port = port
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)
+        self.clients = []  # List of connected clients
+        self.player_positions = {}  # Store player positions
+        self.running = True
+
+    def handle_client(self, client_socket, address):
+        print(f"New connection: {address}")
+        player_id = f"Player_{len(self.player_positions) + 1}"
+        self.player_positions[player_id] = (300, 200)  # Initial position
+
+        # Send initial state to the client
+        initial_state = ",".join([f"{pid},{x},{y}" for pid, (x, y) in self.player_positions.items()])
+        client_socket.sendall(initial_state.encode('utf-8'))
+
+        self.clients.append(client_socket)
+
+        try:
+            while self.running:
+                data = client_socket.recv(1024)
+                if not data:
+                    break
+                player_data = data.decode('utf-8').split(',')
+                player_id = player_data[0]
+                x, y = int(player_data[1]), int(player_data[2])
+
+                # Update the player's position
+                self.player_positions[player_id] = (x, y)
+
+                # Broadcast the updated game state
+                self.broadcast_game_state()
+
+        except ConnectionResetError:
+            print(f"Connection lost: {address}")
+        finally:
+            self.clients.remove(client_socket)
+            del self.player_positions[player_id]
+            client_socket.close()
+
+    def broadcast_game_state(self):
+        state = ",".join([f"{pid},{x},{y}" for pid, (x, y) in self.player_positions.items()])
+        for client in self.clients:
+            client.sendall(state.encode('utf-8'))
+
+    def start(self):
+        print(f"Server started on {self.host}:{self.port}")
+        while self.running:
+            client_socket, client_address = self.server_socket.accept()
+            client_thread = threading.Thread(target=self.handle_client, args=(client_socket, client_address))
+            client_thread.start()
+
+    def stop(self):
+        self.running = False
+        self.server_socket.close()
+
+
+# Main game loop
+def server_game_loop():
+    pygame.init()
+    screen = pygame.display.set_mode((1280, 720))
+    pygame.display.set_caption("Stick Fight")
+
+    game_server = GameServer()
+    threading.Thread(target=game_server.start).start()
+
+    # Start with the opening screen
+    current_state = "welcome"
+    while current_state != "quit":
+        if current_state == "welcome":
+            current_state = run_video()  # Run the video as the opening screen
+        elif current_state == "main_menu":
+            font = pygame.font.Font(None, 50)
+            menu_font = pygame.font.Font(None, 36)
+            options = ["Start Game", "Instructions", "Settings", "Quit"]
+
+            draw_menu(screen, menu_font, font, options)  # Show the main menu
+
+            pygame.display.flip()
+
+            # Handle menu interaction (this should ideally be in a game loop)
+            current_state = "game"  # Automatically proceed to game state for now
+
+        elif current_state == "game":
+            current_state = main_game()  # Start the main game
+
+        # Here, the server handles game states and sends positions to clients
+        time.sleep(0.01)
+
+
+if __name__ == "__main__":
+    server_game_loop()
