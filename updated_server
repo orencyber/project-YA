@@ -1,0 +1,137 @@
+import socket
+import threading
+import main_game
+import pygame
+
+# Server settings
+PORT = 5555
+HOST = '0.0.0.0'  # Listen on all interfaces
+
+# Set up server socket
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow reusing the address
+server.bind((HOST, PORT))
+server.listen(5)  # Allow up to 5 queued connections
+print(f"Server started on {HOST}:{PORT}")
+
+# Thread-safe dictionaries for clients and players
+clients_lock = threading.Lock()
+clients = {}  # Stores addr -> client socket
+
+players_lock = threading.Lock()
+players = {}  # Stores addr -> player object
+
+# Create game platforms
+platforms = main_game.create_platforms()
+
+
+def handle_client(client, addr):
+    print(f"New connection {addr} connected")
+
+    while True:
+        try:
+            msg = client.recv(1024).decode("utf-8")
+            if not msg:
+                print(f"Empty message from {addr}, disconnecting")
+                break
+
+            print(f"Received from {addr}: {msg}")
+
+            if msg.startswith('GAME'):
+                with players_lock:
+                    if addr not in players:
+                        print(f"Player {addr} not found")
+                        continue
+
+                    player = players[addr]  # Get the correct player object
+
+                    # Process movement
+                    if msg.endswith("RIGHT"):
+                        player.rect.x += 5  # Simple right movement
+                    elif msg.endswith("LEFT"):
+                        player.rect.x -= 5  # Simple left movement
+                    elif msg.endswith("UP"):
+                        player.rect.y -= 10  # Simple jump
+                    elif msg.endswith("PUNCH"):
+                        # Handle punch action if needed
+                        pass
+
+                    # Keep player on screen
+                    player.rect.x = max(0, min(player.rect.x, 1230))
+                    player.rect.y = max(0, min(player.rect.y, 670))
+
+                # Send all player positions to everyone
+                broadcast_positions()
+
+        except Exception as e:
+            print(f"Error with {addr}: {e}")
+            break
+
+    print(f"[DISCONNECTED] {addr} left.")
+
+    # Safely remove client and player
+    with clients_lock:
+        if addr in clients:
+            del clients[addr]
+
+    with players_lock:
+        if addr in players:
+            del players[addr]
+
+    client.close()
+    broadcast_positions()  # Update everyone that a player left
+
+
+def broadcast_positions():
+    """Send all player positions to all clients."""
+    with players_lock:
+        # Create message with all player positions
+        message = "UPDATE"
+
+        for addr, player in players.items():
+            x, y = player.rect.x, player.rect.y
+            message += f" {addr[0]}:{addr[1]}:{x},{y}"
+
+    with clients_lock:
+        # Send to all connected clients
+        for client in clients.values():
+            try:
+                client.sendall(message.encode())
+            except Exception as e:
+                # Just log error here, disconnects will be handled in client thread
+                print(f"Error sending to client: {e}")
+
+
+def accept_clients():
+    """Accept and handle new client connections"""
+    while True:
+        try:
+            client, addr = server.accept()
+            print(f"New connection from {addr}")
+
+            # Safely add to clients dictionary
+            with clients_lock:
+                clients[addr] = client
+
+            # Create new player and add to players dictionary
+            with players_lock:
+                players[addr] = main_game.Player(str(addr), 300, 200)
+
+            # Start client handler thread
+            thread = threading.Thread(target=handle_client, args=(client, addr))
+            thread.daemon = True  # Allow the server to exit even if threads are running
+            thread.start()
+
+            # Send initial positions to the new client
+            broadcast_positions()
+
+        except Exception as e:
+            print(f"Error accepting client: {e}")
+
+
+# Start the server
+try:
+    accept_clients()
+except KeyboardInterrupt:
+    print("\nServer shutting down...")
+    server.close()
