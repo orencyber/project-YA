@@ -1,0 +1,185 @@
+import socket
+import threading
+import pygame
+import main_game
+import main_file
+import run_mp4 as rm4
+
+WIDTH, HEIGHT = 1280, 720
+SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Stick Fight Client")
+
+HOST = "127.0.0.1"  # Same as server
+PORT = 5555  # Same port as server
+
+players = {}  # Store player positions: {addr: (x, y)}
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+try:
+    client.connect((HOST, PORT))
+    print(f"Connected to server at {HOST}:{PORT}")
+except Exception as e:
+    print(f"Failed to connect: {e}")
+    exit(1)
+
+
+# Function to parse position updates from server
+def extract_details(message):
+    global players
+    players.clear()
+
+    message = message.replace("UPDATE ", "")
+    player_entries = message.split()
+
+    for entry in player_entries:
+        try:
+            ip, port, coords = entry.split(":")
+            addr = (ip, int(port))  # Convert port back to integer
+            x, y = map(int, coords.split(","))
+            players[str(addr)] = (x, y)
+        except Exception as e:
+            print(f"Error parsing entry '{entry}': {e}")
+
+    print(f"Updated players: {players}")
+
+
+# Function to continuously receive messages
+def receive_data():
+    global client, players
+
+    while True:
+        try:
+            message = client.recv(1024).decode()
+            if not message:
+                print("Server disconnected")
+                break
+
+            print(f"Received: {message}")
+
+            if message.startswith("UPDATE"):
+                extract_details(message)
+
+        except socket.error:
+            print("Socket error, attempting to reconnect...")
+            break  # Don't crash the game loop
+
+        except Exception as e:
+            print(f"Connection error: {e}")
+            break
+
+    print("Receive thread ended")
+
+
+def game_loop(screen = None):
+    global SCREEN
+    pygame.init()
+    SCREEN = screen
+    clock = pygame.time.Clock()
+    platforms = main_game.create_platforms()
+
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                running = False
+        if not pygame.get_init():
+            print("ERROR: Pygame quit unexpectedly!")
+            break  # Avoid using SCREEN if pygame is not initialized
+
+        # Get key presses and send to server
+        keys = pygame.key.get_pressed()
+        message = "GAME"
+
+        if keys[pygame.K_a]:
+            message += "LEFT"
+        elif keys[pygame.K_d]:
+            message += "RIGHT"
+        elif keys[pygame.K_SPACE]:
+            message += "UP"
+        elif keys[pygame.K_j]:
+            message += "PUNCH"
+
+        if len(message) > 4:
+            try:
+                client.sendall(message.encode())
+            except Exception as e:
+                print(f"Send error: {e}")
+                running = False
+
+        print("Filling screen...")  # Debug
+        SCREEN.fill((255, 255, 255))  # White background
+
+        for platform in platforms:
+            platform.draw(SCREEN)
+
+        for addr, (x, y) in players.items():
+            pygame.draw.rect(SCREEN, (0, 0, 255), (x, y, 50, 50))
+
+            font = pygame.font.Font(None, 24)
+            label = font.render(str(addr), True, (255, 255, 255))
+            SCREEN.blit(label, (x, y - 20))
+
+        pygame.display.flip()
+        clock.tick(60)
+    print("Game loop ended")
+    pygame.quit()
+
+
+def first_second_screen_send_message():
+    current_state = "welcome"
+
+    while True:
+        if current_state == "welcome":
+            current_state = rm4.main()
+
+        elif current_state == "game":
+            screen = pygame.display.set_mode((WIDTH, HEIGHT))
+            game_loop(screen)
+            break  # Exit after game ends
+
+        elif current_state == "main_menu":
+            pygame.init()
+            screen = pygame.display.set_mode((1280, 720))
+            pygame.display.set_caption("Stick Fight")
+            font = pygame.font.Font(None, 50)
+            menu_font = pygame.font.Font(None, 36)
+            options = ["Start Game", "Instructions", "Settings", "Quit"]
+
+            running = True
+            while running:
+                screen.fill((0, 0, 0))
+                main_file.draw_menu(screen, menu_font, font, options)
+                pygame.display.flip()
+
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        running = False
+                        return "quit"
+
+                    if event.type == pygame.MOUSEBUTTONDOWN:
+                        mouse_x, mouse_y = pygame.mouse.get_pos()
+                        for i, option in enumerate(options):
+                            option_rect = pygame.Rect(550, 200 + i * 50, 200, 50)
+                            if option_rect.collidepoint(mouse_x, mouse_y):
+                                if option == "Quit":
+                                    return "quit"
+                                elif option == "Start Game":
+                                    current_state = "game"
+                                    running = False
+
+        elif current_state == "quit":
+            pygame.quit()
+            break
+
+
+# Start receiving messages in a separate thread
+receive_thread = threading.Thread(target=receive_data, daemon=True)
+receive_thread.start()
+
+# Start game logic
+first_second_screen_send_message()
+
+# Close connection when done
+client.close()
